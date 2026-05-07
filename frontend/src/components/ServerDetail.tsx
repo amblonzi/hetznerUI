@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useStore, api } from '../store';
-import { ArrowLeft, Wifi, HardDrive, Activity, Plug, ScrollText, RefreshCw, Trash2, Play, Square, RotateCw, Thermometer, FolderOpen, Globe, Clock, TerminalSquare, Plus, X, File, ChevronRight, Eye, UploadCloud, ShieldCheck, ShieldAlert, Save } from 'lucide-react';
+import { ArrowLeft, Wifi, HardDrive, Activity, Plug, ScrollText, RefreshCw, Trash2, Play, Square, RotateCw, Thermometer, FolderOpen, Globe, Clock, TerminalSquare, Plus, X, File, ChevronRight, Eye, UploadCloud, ShieldCheck, ShieldAlert, Save, Cpu, GitBranch, Users, Shield } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import Terminal from './Terminal';
 
-type DetailTab = 'processes' | 'services' | 'connections' | 'logs' | 'hardware' | 'files' | 'sites' | 'database' | 'terminal' | 'cron' | 'performance' | 'security';
+type DetailTab = 'processes' | 'services' | 'connections' | 'logs' | 'hardware' | 'files' | 'sites' | 'database' | 'terminal' | 'cron' | 'performance' | 'security' | 'software' | 'git' | 'users' | 'waf';
 
 export default function ServerDetail() {
   const { servers, selectedServerId, setPage, showToast } = useStore();
@@ -38,6 +38,11 @@ export default function ServerDetail() {
   const [firewall, setFirewall] = useState('');
   const [sslDomain, setSslDomain] = useState('');
   const [sslEmail, setSslEmail] = useState('');
+  const [softwareStatus, setSoftwareStatus] = useState<Record<string, string>>({});
+  const [dbData, setDbData] = useState<{table: string, columns: string[], rows: any[], dbType: string, dbName: string} | null>(null);
+  const [gitHooks, setGitHooks] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [wafRules, setWafRules] = useState<string[]>([]);
 
   useEffect(() => {
     if (srv) loadInfo();
@@ -122,6 +127,28 @@ export default function ServerDetail() {
           setFirewall(data.output || '');
           break;
         }
+        case 'software': {
+          const data = await api(`/api/servers/${srv.id}/software`);
+          setSoftwareStatus(data.status || {});
+          break;
+        }
+        case 'git': {
+          const data = await api(`/api/webhooks`);
+          setGitHooks(data.webhooks.filter((w: any) => w.server_id === srv.id) || []);
+          break;
+        }
+        case 'users': {
+          const data = await api(`/api/users`);
+          setUsers(data.users || []);
+          break;
+        }
+        case 'waf': {
+          // Check if WAF file exists (simple way)
+          const data = await api(`/api/servers/${srv.id}/files?path=/etc/nginx/conf.d`);
+          const exists = data.entries?.some((e: any) => e.name === 'basic_waf.conf');
+          setWafRules(exists ? ['basic_waf'] : []);
+          break;
+        }
       }
     } catch (e: any) { showToast(e.message, 'error'); }
     setLoading(false);
@@ -144,6 +171,42 @@ export default function ServerDetail() {
     } catch (e: any) { showToast(e.message, 'error'); }
   }
 
+  async function viewTableData(dbType: string, dbName: string, table: string) {
+    setLoading(true);
+    try {
+      const data = await api(`/api/servers/${srv!.id}/db/data?dbType=${dbType}&dbName=${dbName}&table=${table}`);
+      // Parse raw CSV-ish output
+      const lines = data.raw.trim().split('\n');
+      if (lines.length > 0) {
+        const columns = lines[0].split('\t'); // MySQL -B uses tabs
+        const rows = lines.slice(1).map((l: string) => {
+          const vals = l.split('\t');
+          const obj: any = {};
+          columns.forEach((col: string, i: number) => obj[col] = vals[i]);
+          return obj;
+        });
+        setDbData({ table, columns, rows, dbType, dbName });
+      } else {
+        setDbData({ table, columns: [], rows: [], dbType, dbName });
+      }
+    } catch (e: any) { showToast(e.message, 'error'); }
+    setLoading(false);
+  }
+
+  async function updateRecord(dbType: string, dbName: string, table: string, pkCol: string, pkVal: any, currentData: any) {
+    const newDataStr = prompt('Edit record JSON:', JSON.stringify(currentData));
+    if (!newDataStr) return;
+    try {
+      const data = JSON.parse(newDataStr);
+      await api(`/api/servers/${srv!.id}/db/data/update`, {
+        method: 'POST',
+        body: JSON.stringify({ dbType, dbName, table, pkCol, pkVal, data })
+      });
+      showToast('Record updated', 'success');
+      viewTableData(dbType, dbName, table);
+    } catch (e: any) { showToast('Invalid JSON or update error', 'error'); }
+  }
+
   if (!srv) return <div style={{ padding: 48, textAlign: 'center', color: '#64748b' }}>Server not found</div>;
 
   const sortedProcesses = [...processes].sort((a, b) =>
@@ -162,6 +225,10 @@ export default function ServerDetail() {
     { key: 'cron', label: 'Cron Jobs', icon: Clock },
     { key: 'performance', label: 'Performance', icon: Activity },
     { key: 'security', label: 'Security', icon: ShieldCheck },
+    { key: 'software', label: 'Software', icon: Cpu },
+    { key: 'git', label: 'Git/Webhooks', icon: GitBranch },
+    { key: 'users', label: 'Sub-Accounts', icon: Users },
+    { key: 'waf', label: 'WAF', icon: Shield },
     { key: 'terminal', label: 'Terminal', icon: TerminalSquare },
   ];
 
@@ -573,12 +640,68 @@ export default function ServerDetail() {
             {/* Database Info Sections */}
             {Object.entries(dbInfo).map(([name, content]) => (
               <div key={name} className="glass">
-                <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(99,120,195,0.1)', fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>
-                  {name.toUpperCase()} Status
+                <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(99,120,195,0.1)', fontWeight: 600, color: '#f1f5f9', fontSize: 13, display: 'flex', justifyContent: 'space-between' }}>
+                  <span>{name.toUpperCase()} Databases</span>
                 </div>
-                <pre className="log-viewer" style={{ fontSize: 11, margin: 0, borderRadius: 0 }}>{content}</pre>
+                <div style={{ padding: 16 }}>
+                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {content.split('\n').filter(l => l.trim() && !l.includes('Database') && !l.includes('--')).map((db, i) => (
+                        <div key={i} className="glass-sm" style={{ padding: '8px 12px' }}>
+                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                              <span style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc' }}>{db.trim()}</span>
+                              <button className="btn btn-ghost" style={{ fontSize: 10, padding: '2px 8px' }} onClick={async () => {
+                                 const res = await api(`/api/servers/${srv!.id}/db/tables`, { method: 'POST', body: JSON.stringify({ dbType: name, dbName: db.trim() }) });
+                                 alert(`Tables in ${db}:\n${res.output}`);
+                              }}>List Tables</button>
+                           </div>
+                           <div style={{ fontSize: 11, color: '#64748b' }}>
+                              Quick Actions: 
+                              <button style={{ background: 'none', border: 'none', color: '#818cf8', fontSize: 11, cursor: 'pointer', marginLeft: 8 }} onClick={() => {
+                                 const table = prompt('Table name to browse:');
+                                 if (table) viewTableData(name, db.trim(), table);
+                              }}>Browse Table</button>
+                           </div>
+                        </div>
+                      ))}
+                   </div>
+                </div>
               </div>
             ))}
+
+            {dbData && (
+              <div className="glass animate-fadeIn" style={{ overflow: 'hidden' }}>
+                <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(99,120,195,0.1)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <HardDrive size={14} color="#6366f1" />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9' }}>Table: {dbData.table}</span>
+                  </div>
+                  <button className="btn btn-ghost" onClick={() => setDbData(null)}>Close</button>
+                </div>
+                <div style={{ maxHeight: 400, overflow: 'auto' }}>
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        {dbData.columns.map(col => <th key={col}>{col}</th>)}
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dbData.rows.map((row, i) => (
+                        <tr key={i}>
+                          {dbData.columns.map(col => <td key={col} style={{ fontSize: 11, color: '#e2e8f0' }}>{row[col]}</td>)}
+                          <td>
+                             <button className="btn btn-ghost" style={{ fontSize: 10, padding: '2px 4px' }} onClick={() => {
+                                const pk = dbData.columns.find(c => c.toLowerCase().includes('id')) || dbData.columns[0];
+                                updateRecord(dbData.dbType, dbData.dbName, dbData.table, pk, row[pk], row);
+                             }}>Edit</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
 
             {/* Backups Section */}
             <div className="glass">
@@ -922,6 +1045,229 @@ export default function ServerDetail() {
                   showToast('SSL Issue process completed', 'success');
                 } catch (e: any) { showToast(e.message, 'error'); }
               }}>Issue Certificate</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SOFTWARE TAB */}
+      {tab === 'software' && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
+          {['nginx', 'mysql-server', 'postgresql', 'php-fpm', 'docker.io', 'git', 'certbot', 'redis-server', 'nodejs', 'pm2'].map(pkg => {
+            const isInstalled = softwareStatus[pkg] === 'installed';
+            return (
+              <div key={pkg} className="glass" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <Cpu size={16} color="#6366f1" />
+                    <span style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', textTransform: 'capitalize' }}>{pkg.replace('-server', '').replace('.io', '')}</span>
+                  </div>
+                  <span className="metric-badge" style={{ background: isInstalled ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', color: isInstalled ? '#86efac' : '#fca5a5' }}>
+                    {isInstalled ? 'Installed' : 'Missing'}
+                  </span>
+                </div>
+                <p style={{ fontSize: 11, color: '#64748b' }}>
+                  {pkg === 'nginx' ? 'High-performance web server and reverse proxy.' :
+                   pkg === 'mysql-server' ? 'The world\'s most popular open-source database.' :
+                   pkg === 'postgresql' ? 'Advanced open-source relational database.' :
+                   pkg === 'php-fpm' ? 'PHP FastCGI Process Manager.' :
+                   pkg === 'docker.io' ? 'Containerization platform for modern apps.' :
+                   pkg === 'git' ? 'Distributed version control system.' :
+                   pkg === 'certbot' ? 'Tool for automated SSL/TLS certificates.' :
+                   pkg === 'redis-server' ? 'In-memory data structure store.' :
+                   pkg === 'nodejs' ? 'JavaScript runtime for server-side apps.' :
+                   pkg === 'pm2' ? 'Production process manager for Node.js.' : ''}
+                </p>
+                <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid rgba(99,120,195,0.05)' }}>
+                  {!isInstalled ? (
+                    <button className="btn btn-primary" style={{ width: '100%', fontSize: 11, padding: '6px' }} onClick={async () => {
+                      showToast(`Installing ${pkg}... this may take a few minutes`, 'info');
+                      try {
+                        await api(`/api/servers/${srv.id}/software/install`, { method: 'POST', body: JSON.stringify({ name: pkg }) });
+                        showToast(`${pkg} installed successfully`, 'success');
+                        loadTabData();
+                      } catch (e: any) { showToast(e.message, 'error'); }
+                    }}>Install Package</button>
+                  ) : (
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button className="btn btn-ghost" style={{ flex: 1, fontSize: 10, padding: '4px' }} disabled>Update</button>
+                      <button className="btn btn-ghost" style={{ flex: 1, fontSize: 10, padding: '4px', color: '#ef4444' }}>Remove</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* GIT / WEBHOOKS TAB */}
+      {tab === 'git' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 400px', gap: 20 }}>
+          <div className="glass">
+            <div style={{ padding: 16, borderBottom: '1px solid rgba(99,120,195,0.1)', fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>
+              Configured Webhooks
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="data-table">
+                <thead><tr><th>Name</th><th>Branch</th><th>Path</th><th>URL</th><th></th></tr></thead>
+                <tbody>
+                  {gitHooks.map(h => (
+                    <tr key={h.id}>
+                      <td style={{ fontWeight: 600 }}>{h.name}</td>
+                      <td><span className="metric-badge">{h.branch}</span></td>
+                      <td style={{ fontSize: 11, fontFamily: 'monospace' }}>{h.path}</td>
+                      <td style={{ fontSize: 10, fontFamily: 'monospace', color: '#6366f1' }}>
+                        {window.location.origin}/api/deploy/{h.secret}
+                        <button style={{ background: 'none', border: 'none', color: '#818cf8', marginLeft: 6, cursor: 'pointer' }} onClick={() => { navigator.clipboard.writeText(`${window.location.origin}/api/deploy/${h.secret}`); showToast('Copied to clipboard', 'success'); }}>Copy</button>
+                      </td>
+                      <td>
+                        <button className="btn btn-ghost" style={{ padding: '2px 6px' }} onClick={async () => {
+                           if (confirm('Delete webhook?')) {
+                              await api(`/api/webhooks/${h.id}`, { method: 'DELETE' });
+                              loadTabData();
+                           }
+                        }}><Trash2 size={12} color="#ef4444" /></button>
+                      </td>
+                    </tr>
+                  ))}
+                  {gitHooks.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', padding: 32, color: '#64748b' }}>No webhooks configured</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div className="glass">
+            <div style={{ padding: 16, borderBottom: '1px solid rgba(99,120,195,0.1)', fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>Create Webhook</div>
+            <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+               <div>
+                 <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Name</div>
+                 <input id="wh-name" placeholder="My App Deployment" className="input" style={{ width: '100%' }} />
+               </div>
+               <div>
+                 <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Local Path</div>
+                 <input id="wh-path" placeholder="/var/www/myapp" className="input" style={{ width: '100%' }} />
+               </div>
+               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                 <div>
+                   <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Branch</div>
+                   <input id="wh-branch" placeholder="main" className="input" style={{ width: '100%' }} />
+                 </div>
+                 <div>
+                   <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Post-Command</div>
+                   <input id="wh-cmd" placeholder="npm run build" className="input" style={{ width: '100%' }} />
+                 </div>
+               </div>
+               <button className="btn btn-primary" onClick={async () => {
+                 const name = (document.getElementById('wh-name') as HTMLInputElement).value;
+                 const path = (document.getElementById('wh-path') as HTMLInputElement).value;
+                 const branch = (document.getElementById('wh-branch') as HTMLInputElement).value;
+                 const post_command = (document.getElementById('wh-cmd') as HTMLInputElement).value;
+                 if (!name || !path) return showToast('Name and Path required', 'error');
+                 try {
+                   await api(`/api/webhooks`, { method: 'POST', body: JSON.stringify({ server_id: srv.id, name, path, branch, post_command }) });
+                   showToast('Webhook created', 'success');
+                   loadTabData();
+                 } catch (e: any) { showToast(e.message, 'error'); }
+               }}>Create Webhook</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SUB-ACCOUNTS TAB */}
+      {tab === 'users' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 350px', gap: 20 }}>
+          <div className="glass">
+            <div style={{ padding: 16, borderBottom: '1px solid rgba(99,120,195,0.1)', fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>System Users</div>
+            <table className="data-table">
+              <thead><tr><th>Username</th><th>Role</th><th>Created</th></tr></thead>
+              <tbody>
+                {users.map(u => (
+                  <tr key={u.id}>
+                    <td style={{ fontWeight: 600 }}>{u.username}</td>
+                    <td><span className="metric-badge">{u.role}</span></td>
+                    <td style={{ fontSize: 11 }}>{new Date(u.created_at).toLocaleDateString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="glass">
+             <div style={{ padding: 16, borderBottom: '1px solid rgba(99,120,195,0.1)', fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>Create Sub-Account</div>
+             <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <input id="u-name" placeholder="Username" className="input" />
+                <input id="u-pass" type="password" placeholder="Password" className="input" />
+                <select id="u-role" className="input">
+                   <option value="user">User (Restricted)</option>
+                   <option value="admin">Admin (Full Access)</option>
+                </select>
+                <button className="btn btn-primary" onClick={async () => {
+                  const username = (document.getElementById('u-name') as HTMLInputElement).value;
+                  const password = (document.getElementById('u-pass') as HTMLInputElement).value;
+                  const role = (document.getElementById('u-role') as HTMLSelectElement).value;
+                  if (!username || !password) return showToast('Username and Password required', 'error');
+                  try {
+                    await api(`/api/users`, { method: 'POST', body: JSON.stringify({ username, password, role }) });
+                    showToast('User created', 'success');
+                    loadTabData();
+                  } catch (e: any) { showToast(e.message, 'error'); }
+                }}>Add User</button>
+             </div>
+          </div>
+        </div>
+      )}
+
+      {/* WAF TAB */}
+      {tab === 'waf' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 350px', gap: 20 }}>
+          <div className="glass">
+            <div style={{ padding: 16, borderBottom: '1px solid rgba(99,120,195,0.1)', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Shield size={16} color="#6366f1" />
+              <span style={{ fontSize: 14, fontWeight: 600, color: '#f1f5f9' }}>Web Application Firewall (Nginx)</span>
+            </div>
+            <div style={{ padding: 20 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {[
+                  { id: 'basic_waf', title: 'Global Attack Protection', desc: 'Blocks SQLi, XSS, and bad bots using common Nginx security patterns.' },
+                ].map(rule => {
+                  const isActive = wafRules.includes(rule.id);
+                  return (
+                    <div key={rule.id} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: 16, background: isActive ? 'rgba(99,102,241,0.05)' : 'rgba(255,255,255,0.02)', borderRadius: 12, border: isActive ? '1px solid rgba(99,102,241,0.3)' : '1px solid rgba(99,120,195,0.1)' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9', marginBottom: 2 }}>{rule.title}</div>
+                        <div style={{ fontSize: 11, color: '#64748b' }}>{rule.desc}</div>
+                      </div>
+                      <div 
+                        style={{ width: 44, height: 22, background: isActive ? '#6366f1' : '#1e293b', borderRadius: 20, position: 'relative', cursor: 'pointer', transition: 'all 0.3s' }} 
+                        onClick={async () => {
+                          const newStatus = !isActive;
+                          try {
+                            await api(`/api/servers/${srv.id}/waf/toggle`, { method: 'POST', body: JSON.stringify({ enabled: newStatus }) });
+                            showToast(`WAF ${newStatus ? 'Enabled' : 'Disabled'}`, 'success');
+                            loadTabData();
+                          } catch (e: any) { showToast(e.message, 'error'); }
+                        }}
+                      >
+                         <div style={{ width: 18, height: 18, background: '#fff', borderRadius: '50%', position: 'absolute', top: 2, left: isActive ? 24 : 2, transition: 'all 0.3s' }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+          <div className="glass">
+            <div style={{ padding: 16, borderBottom: '1px solid rgba(99,120,195,0.1)', fontWeight: 600, color: '#f1f5f9', fontSize: 13 }}>Global WAF Status</div>
+            <div style={{ padding: 24, textAlign: 'center' }}>
+               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>Status</span>
+                  <span className="metric-badge" style={{ background: wafRules.length > 0 ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', color: wafRules.length > 0 ? '#86efac' : '#fca5a5' }}>
+                    {wafRules.length > 0 ? 'ACTIVE' : 'INACTIVE'}
+                  </span>
+               </div>
+               <p style={{ fontSize: 11, color: '#64748b', marginBottom: 20, textAlign: 'left' }}>
+                 When enabled, Nginx will block suspicious requests before they reach your application. Note: This applies to all sites hosted on this server.
+               </p>
             </div>
           </div>
         </div>

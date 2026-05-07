@@ -59,7 +59,23 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'admin', -- 'admin' or 'user'
+    phone_number TEXT,
+    two_factor_enabled INTEGER DEFAULT 0,
+    two_factor_secret TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id INTEGER,
+    name TEXT NOT NULL,
+    secret TEXT UNIQUE NOT NULL,
+    path TEXT NOT NULL,
+    branch TEXT DEFAULT 'main',
+    post_command TEXT,
+    last_triggered DATETIME,
+    FOREIGN KEY(server_id) REFERENCES servers(id)
   );
   CREATE INDEX IF NOT EXISTS idx_metrics_server_time ON metrics(server_id, timestamp);
 `);
@@ -71,13 +87,22 @@ try {
   if (!cols.includes('ssh_port')) db.exec("ALTER TABLE servers ADD COLUMN ssh_port INTEGER DEFAULT 22;");
   if (!cols.includes('ssh_user')) db.exec("ALTER TABLE servers ADD COLUMN ssh_user TEXT DEFAULT 'root';");
   if (!cols.includes('is_cloud')) db.exec("ALTER TABLE servers ADD COLUMN is_cloud INTEGER DEFAULT 0;");
+  
+  const userCols = db.pragma('table_info(users)').map((c: any) => c.name);
+  if (!userCols.includes('role')) db.exec("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'admin';");
 } catch (e) { console.log('Migration check:', e); }
 
 // Seed default admin user
-const adminUser = db.prepare('SELECT * FROM users WHERE username = ?').get(process.env.ADMIN_USERNAME || 'admin');
+const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+const adminPassword = process.env.ADMIN_PASSWORD || 'admin';
+const adminUser = db.prepare('SELECT * FROM users WHERE username = ?').get(adminUsername);
 if (!adminUser) {
-  const hash = bcrypt.hashSync(process.env.ADMIN_PASSWORD || 'admin', 10);
-  db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(process.env.ADMIN_USERNAME || 'admin', hash);
+  const hash = bcrypt.hashSync(adminPassword, 10);
+  db.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)').run(adminUsername, hash);
+} else {
+  // Update password if it changed in ENV (optional safety)
+  const hash = bcrypt.hashSync(adminPassword, 10);
+  db.prepare('UPDATE users SET password_hash = ? WHERE username = ?').run(hash, adminUsername);
 }
 
 // Prune old metrics (keep 7 days)
@@ -1075,6 +1100,169 @@ app.post('/api/metrics/ingest', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// SOFTWARE / PACKAGE INSTALLER (Phase 3)
+// ═══════════════════════════════════════════════════════════
+
+app.get('/api/servers/:id/software', authMiddleware, async (req, res) => {
+  const srv: any = getServerById(Number(req.params.id));
+  if (!srv) return res.status(404).json({ error: 'Server not found' });
+  const packages = ['nginx', 'apache2', 'mysql-server', 'postgresql', 'php-fpm', 'docker.io', 'git', 'certbot', 'redis-server', 'nodejs', 'pm2', 'ufw'];
+  try {
+    const script = packages.map(p => `which ${p.split('-')[0]} >/dev/null 2>&1 && echo "${p}:installed" || echo "${p}:not-installed"`).join('; ');
+    const output = await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, script, srv.ssh_port);
+    const status = output.trim().split('\n').reduce((acc: any, line) => {
+      const [name, val] = line.trim().split(':');
+      if (name) acc[name] = val;
+      return acc;
+    }, {});
+    res.json({ status });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/servers/:id/software/install', authMiddleware, async (req, res) => {
+  const srv: any = getServerById(Number(req.params.id));
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'Package name required' });
+  try {
+    let cmd = `sudo apt-get update && sudo apt-get install -y ${name}`;
+    if (name === 'pm2') cmd = `sudo npm install -g pm2`;
+    if (name === 'nodejs') cmd = `curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs`;
+    const output = await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, cmd, srv.ssh_port);
+    res.json({ success: true, output });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// DATABASE DATA CRUD (Phase 3 Extended)
+// ═══════════════════════════════════════════════════════════
+
+app.get('/api/servers/:id/db/data', authMiddleware, async (req, res) => {
+  const srv: any = getServerById(Number(req.params.id));
+  const { dbType, dbName, table, limit = 100, offset = 0 } = req.query;
+  try {
+    let cmd = '';
+    if (dbType === 'mysql') {
+      cmd = `mysql -B -e "USE ${dbName}; SELECT * FROM ${table} LIMIT ${limit} OFFSET ${offset};" 2>&1`;
+    } else if (dbType === 'postgres') {
+      cmd = `sudo -u postgres psql -d ${dbName} -c "COPY (SELECT * FROM ${table} LIMIT ${limit} OFFSET ${offset}) TO STDOUT WITH CSV HEADER" 2>&1`;
+    } else if (dbType === 'sqlite') {
+      cmd = `sqlite3 -header -csv "${dbName}" "SELECT * FROM ${table} LIMIT ${limit} OFFSET ${offset};" 2>&1`;
+    }
+    const output = await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, cmd, srv.ssh_port);
+    res.json({ raw: output });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/servers/:id/db/data/update', authMiddleware, async (req, res) => {
+  const srv: any = getServerById(Number(req.params.id));
+  const { dbType, dbName, table, pkCol, pkVal, data } = req.body;
+  try {
+    const setClause = Object.entries(data).map(([k, v]) => `${k} = '${String(v).replace(/'/g, "''")}'`).join(', ');
+    let cmd = '';
+    if (dbType === 'mysql') {
+      cmd = `mysql -e "USE ${dbName}; UPDATE ${table} SET ${setClause} WHERE ${pkCol} = '${pkVal}';" 2>&1`;
+    } else if (dbType === 'postgres') {
+      cmd = `sudo -u postgres psql -d ${dbName} -c "UPDATE ${table} SET ${setClause} WHERE ${pkCol} = '${pkVal}';" 2>&1`;
+    } else if (dbType === 'sqlite') {
+      cmd = `sqlite3 "${dbName}" "UPDATE ${table} SET ${setClause} WHERE ${pkCol} = '${pkVal}';" 2>&1`;
+    }
+    const output = await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, cmd, srv.ssh_port);
+    res.json({ success: true, output });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// GIT WEBHOOKS & DEPLOYMENT (Phase 4)
+// ═══════════════════════════════════════════════════════════
+
+app.get('/api/webhooks', authMiddleware, (req, res) => {
+  const webhooks = db.prepare('SELECT w.*, s.name as server_name FROM webhooks w JOIN servers s ON w.server_id = s.id').all();
+  res.json({ webhooks });
+});
+
+app.post('/api/webhooks', authMiddleware, (req, res) => {
+  const { server_id, name, path, branch, post_command } = req.body;
+  const secret = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+  try {
+    const result = db.prepare('INSERT INTO webhooks (server_id, name, secret, path, branch, post_command) VALUES (?, ?, ?, ?, ?, ?)').run(
+      server_id, name, secret, path, branch || 'main', post_command || ''
+    );
+    res.json({ id: result.lastInsertRowid, secret });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/webhooks/:id', authMiddleware, (req, res) => {
+  db.prepare('DELETE FROM webhooks WHERE id = ?').run(req.params.id);
+  res.json({ success: true });
+});
+
+// Public deployment endpoint (no auth, uses secret)
+app.post('/api/deploy/:secret', async (req, res) => {
+  const { secret } = req.params;
+  const webhook: any = db.prepare('SELECT * FROM webhooks WHERE secret = ?').get(secret);
+  if (!webhook) return res.status(404).json({ error: 'Invalid webhook secret' });
+  
+  const srv: any = getServerById(webhook.server_id);
+  if (!srv) return res.status(404).json({ error: 'Server not found' });
+
+  try {
+    const cmd = `cd ${webhook.path} && git pull origin ${webhook.branch} && ${webhook.post_command || 'echo "No post-deploy command"'}`;
+    const output = await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, cmd, srv.ssh_port);
+    db.prepare('UPDATE webhooks SET last_triggered = CURRENT_TIMESTAMP WHERE id = ?').run(webhook.id);
+    res.json({ success: true, output });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// SUB-ACCOUNTS / USERS (Phase 4)
+// ═══════════════════════════════════════════════════════════
+
+app.get('/api/users', authMiddleware, (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+  const users = db.prepare('SELECT id, username, role, phone_number, created_at FROM users').all();
+  res.json({ users });
+});
+
+app.post('/api/users', authMiddleware, (req: any, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden' });
+  const { username, password, role } = req.body;
+  try {
+    const hash = bcrypt.hashSync(password, 10);
+    db.prepare('INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)').run(username, hash, role || 'user');
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// ═══════════════════════════════════════════════════════════
+// NGINX WAF (Phase 4)
+// ═══════════════════════════════════════════════════════════
+
+app.post('/api/servers/:id/waf/toggle', authMiddleware, async (req, res) => {
+  const srv: any = getServerById(Number(req.params.id));
+  const { enabled } = req.body;
+  try {
+    // Simple WAF-like rules using Nginx snippets
+    const wafConfig = `
+# Basic WAF rules
+if ($query_string ~* "union.*select.*\\(") { return 403; }
+if ($query_string ~* "concat.*\\(") { return 403; }
+if ($request_uri ~* "eval\\(") { return 403; }
+if ($request_uri ~* "base64_decode\\(") { return 403; }
+if ($http_user_agent ~* (sqlmap|nikto|w3af|acunetix)) { return 403; }
+`;
+    let cmd = '';
+    if (enabled) {
+      cmd = `echo '${wafConfig.replace(/'/g, "'\\''")}' | sudo tee /etc/nginx/conf.d/basic_waf.conf > /dev/null && sudo systemctl reload nginx`;
+    } else {
+      cmd = `sudo rm -f /etc/nginx/conf.d/basic_waf.conf && sudo systemctl reload nginx`;
+    }
+    await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, cmd, srv.ssh_port);
+    res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Hetzner Dashboard backend running on port ${PORT}`);
