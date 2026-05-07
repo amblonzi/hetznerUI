@@ -1,0 +1,27 @@
+import paramiko
+import sys
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+
+ssh = paramiko.SSHClient()
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+ssh.connect('178.105.71.89', username='root', password='ControL.4028s')
+
+def run(cmd):
+    print(f"> {cmd}")
+    stdin, stdout, stderr = ssh.exec_command(cmd)
+    out = stdout.read().decode('utf-8', errors='replace').strip()
+    err = stderr.read().decode('utf-8', errors='replace').strip()
+    if out: print(out)
+    if err: print(f"ERROR: {err}")
+    return out
+
+print("=== Nginx Configuration for hetzner.inphora.net ===")
+run("grep -r 'hetzner.inphora.net' /etc/nginx/sites-enabled/")
+run("cat /etc/nginx/sites-enabled/hetzner-dashboard")
+
+print("\n=== Certbot Certificates ===")
+run("certbot certificates")
+
+ssh.close()
