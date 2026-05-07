@@ -106,7 +106,6 @@ WantedBy=multi-user.target
     
     # Configure nginx for hetzner.inphora.net
     nginx_conf = """server {
-    listen 80;
     server_name hetzner.inphora.net;
 
     location /api/ {
@@ -131,6 +130,22 @@ WantedBy=multi-user.target
         index index.html;
         try_files $uri $uri/ /index.html;
     }
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/hetzner.inphora.net/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/hetzner.inphora.net/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+}
+
+server {
+    if ($host = hetzner.inphora.net) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+    listen 80;
+    server_name hetzner.inphora.net;
+    return 404; # managed by Certbot
 }""".replace('REMOTE_DIR', REMOTE_DIR)
 
     run(ssh, f"cat << 'NGINXEOF' > /etc/nginx/sites-available/hetzner-dashboard\n{nginx_conf}\nNGINXEOF")

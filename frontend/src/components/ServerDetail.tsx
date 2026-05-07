@@ -49,7 +49,10 @@ export default function ServerDetail() {
   }, [selectedServerId]);
 
   useEffect(() => {
-    if (srv) loadTabData();
+    if (srv) {
+      loadTabData();
+      loadInfo();
+    }
   }, [tab, selectedServerId, metricRange]);
 
   async function loadInfo() {

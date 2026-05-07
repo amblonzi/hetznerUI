@@ -212,26 +212,41 @@ export default function Overview() {
           <div style={{ marginBottom: 24 }}>
             <h3 style={{ fontSize: 14, fontWeight: 700, color: '#f1f5f9', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8 }}>
               <Shield size={16} color="#6366f1" />
-              Security Status
+              Infrastructure Health
             </h3>
             <div className="glass" style={{ padding: 20 }}>
                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-                  <div style={{ width: 48, height: 48, borderRadius: '50%', border: '4px solid #22c55e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700, color: '#22c55e' }}>
-                    100%
+                  <div style={{ 
+                    width: 48, height: 48, borderRadius: '50%', 
+                    border: '4px solid',
+                    borderColor: servers.length > 0 ? '#22c55e' : '#334155',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', 
+                    fontSize: 14, fontWeight: 700, 
+                    color: servers.length > 0 ? '#22c55e' : '#64748b' 
+                  }}>
+                    {servers.length > 0 ? '100%' : '0%'}
                   </div>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9' }}>Infrastructure Secure</div>
-                    <div style={{ fontSize: 11, color: '#64748b' }}>Firewalls active on all nodes</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9' }}>
+                      {servers.length > 0 ? 'Systems Operational' : 'No Active Nodes'}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>
+                      {servers.length} managed servers connected
+                    </div>
                   </div>
                </div>
                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <div style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                    <span style={{ color: '#94a3b8' }}>SSL Certificates</span>
-                    <span style={{ color: '#22c55e', fontWeight: 600 }}>Active</span>
+                    <span style={{ color: '#94a3b8' }}>API Connectivity</span>
+                    <span style={{ color: cloudServers.length > 0 ? '#22c55e' : '#64748b', fontWeight: 600 }}>
+                      {cloudServers.length > 0 ? 'Active' : 'Not Configured'}
+                    </span>
                   </div>
                   <div style={{ fontSize: 11, display: 'flex', justifyContent: 'space-between', padding: '8px 0' }}>
-                    <span style={{ color: '#94a3b8' }}>WAF Protection</span>
-                    <span style={{ color: '#f59e0b', fontWeight: 600 }}>Partial</span>
+                    <span style={{ color: '#94a3b8' }}>Network Scanning</span>
+                    <span style={{ color: servers.length > 0 ? '#22c55e' : '#64748b', fontWeight: 600 }}>
+                      {servers.length > 0 ? 'Monitoring' : 'Idle'}
+                    </span>
                   </div>
                </div>
             </div>
@@ -242,18 +257,10 @@ export default function Overview() {
               <Activity size={16} color="#a855f7" />
               Recent Activity
             </h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              {[
-                { type: 'deploy', msg: 'Website "shalimart" deployed', time: '2m ago' },
-                { type: 'backup', msg: 'Daily backup successful', time: '4h ago' },
-                { type: 'alert', msg: 'CPU Spike on Node "lending"', time: '6h ago' },
-                { type: 'ssl', msg: 'SSL renewed for example.com', time: '1d ago' },
-              ].map((act, i) => (
-                <div key={i} className="glass-sm" style={{ padding: '12px 16px' }}>
-                   <div style={{ fontSize: 12, color: '#e2e8f0', marginBottom: 2 }}>{act.msg}</div>
-                   <div style={{ fontSize: 10, color: '#64748b' }}>{act.time}</div>
-                </div>
-              ))}
+            <div className="glass" style={{ padding: 32, textAlign: 'center' }}>
+              <div style={{ marginBottom: 12, opacity: 0.2 }}><Activity size={32} color="#64748b" /></div>
+              <div style={{ fontSize: 13, color: '#f1f5f9', fontWeight: 600, marginBottom: 4 }}>No Recent Events</div>
+              <div style={{ fontSize: 11, color: '#64748b' }}>System events and deployments will appear here as they occur.</div>
             </div>
           </div>
         </div>
