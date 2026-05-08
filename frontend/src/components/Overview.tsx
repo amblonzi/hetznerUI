@@ -7,10 +7,22 @@ export default function Overview() {
   const [loading, setLoading] = useState(true);
   const [serverInfos, setServerInfos] = useState<Record<number, any>>({});
   const [searchTerm, setSearchTerm] = useState('');
+  const [activities, setActivities] = useState<any[]>([]);
+  const [activityLoading, setActivityLoading] = useState(false);
 
   useEffect(() => {
     loadData();
+    loadActivities();
   }, []);
+
+  async function loadActivities() {
+    setActivityLoading(true);
+    try {
+      const data = await api('/api/activities');
+      setActivities(data.activities || []);
+    } catch (e) { console.error(e); }
+    setActivityLoading(false);
+  }
 
   async function loadData() {
     setLoading(true);
@@ -68,7 +80,7 @@ export default function Overview() {
            />
         </div>
         <div style={{ display: 'flex', gap: 12 }}>
-          <button className="btn btn-ghost" style={{ padding: '10px 20px' }} onClick={loadData} disabled={loading}>
+          <button className="btn btn-ghost" style={{ padding: '10px 20px' }} onClick={() => { loadData(); loadActivities(); }} disabled={loading}>
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} style={{ marginRight: 4 }} /> 
             Sync Infrastructure
           </button>
@@ -257,10 +269,25 @@ export default function Overview() {
               <Activity size={16} color="#a855f7" />
               Recent Activity
             </h3>
-            <div className="glass" style={{ padding: 32, textAlign: 'center' }}>
-              <div style={{ marginBottom: 12, opacity: 0.2 }}><Activity size={32} color="#64748b" /></div>
-              <div style={{ fontSize: 13, color: '#f1f5f9', fontWeight: 600, marginBottom: 4 }}>No Recent Events</div>
-              <div style={{ fontSize: 11, color: '#64748b' }}>System events and deployments will appear here as they occur.</div>
+            <div className="glass" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 4 }}>
+               {activities.length === 0 ? (
+                 <div style={{ padding: 32, textAlign: 'center' }}>
+                    <div style={{ marginBottom: 12, opacity: 0.2 }}><Activity size={32} color="#64748b" /></div>
+                    <div style={{ fontSize: 13, color: '#f1f5f9', fontWeight: 600, marginBottom: 4 }}>No Recent Events</div>
+                    <div style={{ fontSize: 11, color: '#64748b' }}>System events and deployments will appear here.</div>
+                 </div>
+               ) : (
+                 activities.map((act, i) => (
+                   <div key={i} style={{ padding: '10px 12px', borderBottom: i < activities.length - 1 ? '1px solid rgba(255,255,255,0.03)' : 'none' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                         <span style={{ fontSize: 11, fontWeight: 700, color: '#818cf8' }}>{act.action}</span>
+                         <span style={{ fontSize: 9, color: '#475569' }}>{new Date(act.timestamp).toLocaleTimeString()}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#e2e8f0' }}>{act.details}</div>
+                      <div style={{ fontSize: 9, color: '#64748b', marginTop: 2 }}>by {act.user}</div>
+                   </div>
+                 ))
+               )}
             </div>
           </div>
         </div>

@@ -3,12 +3,15 @@ import os
 import sys
 import io
 import zipfile
+from dotenv import load_dotenv
+
+load_dotenv()
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 HOST = '178.105.71.89'
 USER = 'root'
-PASSWORD = 'ControL.4028s'
+PASSWORD = os.getenv('DEPLOY_PASSWORD', 'ControL.4028s')
 REMOTE_DIR = '/opt/hetzner-dashboard'
 ZIP_PATH = 'payload_final.zip'
 

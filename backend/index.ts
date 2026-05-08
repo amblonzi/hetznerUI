@@ -77,7 +77,15 @@ db.exec(`
     last_triggered DATETIME,
     FOREIGN KEY(server_id) REFERENCES servers(id)
   );
+  CREATE TABLE IF NOT EXISTS activities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user TEXT,
+    action TEXT,
+    details TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE INDEX IF NOT EXISTS idx_metrics_server_time ON metrics(server_id, timestamp);
+  CREATE INDEX IF NOT EXISTS idx_activities_time ON activities(timestamp);
 `);
 
 // Migrate: add missing columns to old DB schemas
@@ -153,6 +161,12 @@ function getServerById(id: number): any {
   return db.prepare('SELECT * FROM servers WHERE id = ?').get(id);
 }
 
+function logActivity(user: string, action: string, details: string) {
+  try {
+    db.prepare('INSERT INTO activities (user, action, details) VALUES (?, ?, ?)').run(user, action, details);
+  } catch (e) { console.error('LogActivity error:', e); }
+}
+
 // ═══════════════════════════════════════════════════════════
 // AUTH ROUTES
 // ═══════════════════════════════════════════════════════════
@@ -162,6 +176,7 @@ app.post('/api/auth/login', (req, res) => {
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
+  logActivity(username, 'LOGIN', 'User logged in to dashboard');
   const token = jwt.sign({ id: user.id, username: user.username }, JWT_SECRET, { expiresIn: '24h' });
   res.json({ token, username: user.username });
 });
@@ -276,13 +291,14 @@ app.get('/api/servers/:id/processes', authMiddleware, async (req, res) => {
 });
 
 // Kill process
-app.post('/api/servers/:id/kill', authMiddleware, async (req, res) => {
+app.post('/api/servers/:id/kill', authMiddleware, async (req: any, res) => {
   const srv: any = getServerById(Number(req.params.id));
   if (!srv) return res.status(404).json({ error: 'Server not found' });
   const { pid } = req.body;
   if (!pid) return res.status(400).json({ error: 'pid required' });
   try {
     await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, `kill -9 ${pid}`, srv.ssh_port);
+    logActivity(req.user.username, 'KILL_PROCESS', `Killed PID ${pid} on ${srv.name}`);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -308,13 +324,14 @@ app.get('/api/servers/:id/services', authMiddleware, async (req, res) => {
 });
 
 // Service action (start/stop/restart)
-app.post('/api/servers/:id/services/:name/:action', authMiddleware, async (req, res) => {
+app.post('/api/servers/:id/services/:name/:action', authMiddleware, async (req: any, res) => {
   const srv: any = getServerById(Number(req.params.id));
   if (!srv) return res.status(404).json({ error: 'Server not found' });
   const { name, action } = req.params;
   if (!['start', 'stop', 'restart'].includes(action)) return res.status(400).json({ error: 'Invalid action' });
   try {
     await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, `systemctl ${action} ${name}`, srv.ssh_port);
+    logActivity(req.user.username, 'SERVICE_ACTION', `${action} service ${name} on ${srv.name}`);
     res.json({ success: true });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
@@ -788,7 +805,7 @@ app.post('/api/servers/:id/sites/add', authMiddleware, async (req, res) => {
   const srv: any = getServerById(Number(req.params.id));
   const { domain, root, type } = req.body; // type: php, static, proxy
   try {
-    const vhost = `
+    let vhost = `
 server {
     listen 80;
     server_name ${domain};
@@ -796,21 +813,25 @@ server {
     index index.html index.php;
 
     location / {
-        try_files $uri $uri/ /index.php?$query_string;
+        ${type === 'proxy' ? `
+        proxy_pass http://127.0.0.1:${req.body.port || 3000};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;` : 'try_files $uri $uri/ /index.php?$query_string;'}
     }
 
     ${type === 'php' ? `
     location ~ \\.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+        fastcgi_pass unix:/var/run/php/$(ls -1 /var/run/php/ | grep ".sock" | head -1 || echo "php-fpm.sock");
     }` : ''}
 }`;
     const escapedVhost = vhost.replace(/'/g, "'\\''");
     const cmd = `
       echo '${escapedVhost}' | sudo tee /etc/nginx/sites-available/${domain} > /dev/null && 
       sudo ln -sf /etc/nginx/sites-available/${domain} /etc/nginx/sites-enabled/ &&
-      sudo mkdir -p ${root} && 
-      sudo chown -R www-data:www-data ${root} &&
+      ${type !== 'proxy' ? `sudo mkdir -p ${root} && sudo chown -R www-data:www-data ${root} &&` : ''}
       sudo nginx -t && sudo systemctl reload nginx
     `;
     const output = await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, cmd, srv.ssh_port);
@@ -1106,9 +1127,9 @@ app.post('/api/metrics/ingest', (req, res) => {
 app.get('/api/servers/:id/software', authMiddleware, async (req, res) => {
   const srv: any = getServerById(Number(req.params.id));
   if (!srv) return res.status(404).json({ error: 'Server not found' });
-  const packages = ['nginx', 'apache2', 'mysql-server', 'postgresql', 'php-fpm', 'docker.io', 'git', 'certbot', 'redis-server', 'nodejs', 'pm2', 'ufw'];
+  const packages = ['nginx', 'apache2', 'mysql-server', 'postgresql', 'php-fpm', 'docker.io', 'git', 'certbot', 'redis-server', 'nodejs', 'pm2', 'ufw', 'fail2ban', 'htop', 'curl', 'wget'];
   try {
-    const script = packages.map(p => `which ${p.split('-')[0]} >/dev/null 2>&1 && echo "${p}:installed" || echo "${p}:not-installed"`).join('; ');
+    const script = packages.map(p => `(which ${p.split('-')[0]} >/dev/null 2>&1 || [ -f /etc/init.d/${p} ] || [ -f /lib/systemd/system/${p}.service ]) && echo "${p}:installed" || echo "${p}:not-installed"`).join('; ');
     const output = await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, script, srv.ssh_port);
     const status = output.trim().split('\n').reduce((acc: any, line) => {
       const [name, val] = line.trim().split(':');
@@ -1260,6 +1281,14 @@ if ($http_user_agent ~* (sqlmap|nikto|w3af|acunetix)) { return 403; }
     }
     await sshExec(srv.ip, srv.ssh_user, srv.ssh_password, cmd, srv.ssh_port);
     res.json({ success: true });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
+
+// Activity logs
+app.get('/api/activities', authMiddleware, (req, res) => {
+  try {
+    const rows = db.prepare('SELECT * FROM activities ORDER BY timestamp DESC LIMIT 50').all();
+    res.json({ activities: rows });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 

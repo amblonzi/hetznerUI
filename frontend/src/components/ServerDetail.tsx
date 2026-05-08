@@ -43,6 +43,8 @@ export default function ServerDetail() {
   const [gitHooks, setGitHooks] = useState<any[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [wafRules, setWafRules] = useState<string[]>([]);
+  const [modal, setModal] = useState<{type: 'tables' | 'edit-record' | 'json' | 'input', data: any} | null>(null);
+  const [siteType, setSiteType] = useState('static');
 
   useEffect(() => {
     if (srv) loadInfo();
@@ -507,12 +509,15 @@ export default function ServerDetail() {
 
           {/* File Actions */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 11 }} onClick={async () => {
-              const name = prompt('Folder name:');
-              if (name) {
-                await api(`/api/servers/${srv.id}/files/mkdir`, { method: 'POST', body: JSON.stringify({ path: `${filePath}/${name}` }) });
-                loadTabData();
-              }
+            <button className="btn btn-ghost" style={{ padding: '4px 10px', fontSize: 11 }} onClick={() => {
+              setModal({ type: 'input', data: { 
+                title: 'New Folder', 
+                placeholder: 'Folder name', 
+                onSave: async (val: string) => {
+                  await api(`/api/servers/${srv.id}/files/mkdir`, { method: 'POST', body: JSON.stringify({ path: `${filePath}/${val}` }) });
+                  loadTabData();
+                } 
+              }});
             }}>
               <Plus size={12} /> New Folder
             </button>
@@ -593,7 +598,14 @@ export default function ServerDetail() {
               <div key={name} className="glass">
                 <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(99,120,195,0.1)', display: 'flex', alignItems: 'center', gap: 8 }}>
                   <Globe size={14} color="#6366f1" />
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9' }}>{name}</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9', flex: 1 }}>{name}</span>
+                  <button className="btn btn-ghost" style={{ padding: '2px 6px' }} onClick={async () => {
+                     if (confirm(`Delete website ${name}?`)) {
+                       await api(`/api/servers/${srv.id}/sites/delete`, { method: 'POST', body: JSON.stringify({ domain: name }) });
+                       showToast('Website deleted', 'success');
+                       loadTabData();
+                     }
+                   }}><Trash2 size={12} color="#ef4444" /></button>
                 </div>
                 <pre className="log-viewer" style={{ fontSize: 11, margin: 0, borderRadius: 0 }}>{content}</pre>
               </div>
@@ -609,24 +621,38 @@ export default function ServerDetail() {
                 <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Domain</div>
                 <input id="site-domain" placeholder="example.com" style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(99,120,195,0.2)', borderRadius: 6, padding: '8px 12px', color: '#f1f5f9', fontSize: 12, outline: 'none' }} />
               </div>
-              <div>
-                <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Document Root</div>
-                <input id="site-root" placeholder="/var/www/html/mysite" style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(99,120,195,0.2)', borderRadius: 6, padding: '8px 12px', color: '#f1f5f9', fontSize: 12, outline: 'none' }} />
-              </div>
+              {siteType !== 'proxy' ? (
+                <div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Document Root</div>
+                  <input id="site-root" placeholder="/var/www/html/mysite" style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(99,120,195,0.2)', borderRadius: 6, padding: '8px 12px', color: '#f1f5f9', fontSize: 12, outline: 'none' }} />
+                </div>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Backend Port</div>
+                  <input id="site-port" type="number" placeholder="3000" style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(99,120,195,0.2)', borderRadius: 6, padding: '8px 12px', color: '#f1f5f9', fontSize: 12, outline: 'none' }} />
+                </div>
+              )}
               <div>
                 <div style={{ fontSize: 10, color: '#64748b', marginBottom: 4 }}>Type</div>
-                <select id="site-type" style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(99,120,195,0.2)', borderRadius: 6, padding: '8px 12px', color: '#f1f5f9', fontSize: 12, outline: 'none' }}>
+                <select 
+                  id="site-type" 
+                  value={siteType}
+                  onChange={e => setSiteType(e.target.value)}
+                  style={{ width: '100%', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(99,120,195,0.2)', borderRadius: 6, padding: '8px 12px', color: '#f1f5f9', fontSize: 12, outline: 'none' }}
+                >
                   <option value="static">Static HTML</option>
                   <option value="php">PHP-FPM</option>
+                  <option value="proxy">Reverse Proxy</option>
                 </select>
               </div>
               <button className="btn btn-primary" style={{ marginTop: 8 }} onClick={async () => {
                 const domain = (document.getElementById('site-domain') as HTMLInputElement).value;
-                const root = (document.getElementById('site-root') as HTMLInputElement).value;
-                const type = (document.getElementById('site-type') as HTMLSelectElement).value;
-                if (!domain || !root) return;
+                const root = siteType !== 'proxy' ? (document.getElementById('site-root') as HTMLInputElement).value : '/dev/null';
+                const port = siteType === 'proxy' ? (document.getElementById('site-port') as HTMLInputElement).value : '';
+                const type = siteType;
+                if (!domain || (!root && type !== 'proxy')) return;
                 try {
-                  await api(`/api/servers/${srv.id}/sites/add`, { method: 'POST', body: JSON.stringify({ domain, root, type }) });
+                  await api(`/api/servers/${srv.id}/sites/add`, { method: 'POST', body: JSON.stringify({ domain, root, type, port }) });
                   showToast('Website added successfully', 'success');
                   loadTabData();
                 } catch (e: any) { showToast(e.message, 'error'); }
@@ -654,14 +680,17 @@ export default function ServerDetail() {
                               <span style={{ fontSize: 13, fontWeight: 600, color: '#a5b4fc' }}>{db.trim()}</span>
                               <button className="btn btn-ghost" style={{ fontSize: 10, padding: '2px 8px' }} onClick={async () => {
                                  const res = await api(`/api/servers/${srv!.id}/db/tables`, { method: 'POST', body: JSON.stringify({ dbType: name, dbName: db.trim() }) });
-                                 alert(`Tables in ${db}:\n${res.output}`);
+                                 setModal({ type: 'tables', data: { dbName: db.trim(), output: res.output } });
                               }}>List Tables</button>
                            </div>
                            <div style={{ fontSize: 11, color: '#64748b' }}>
                               Quick Actions: 
                               <button style={{ background: 'none', border: 'none', color: '#818cf8', fontSize: 11, cursor: 'pointer', marginLeft: 8 }} onClick={() => {
-                                 const table = prompt('Table name to browse:');
-                                 if (table) viewTableData(name, db.trim(), table);
+                                 setModal({ type: 'input', data: { 
+                                   title: 'Browse Table', 
+                                   placeholder: 'Table name', 
+                                   onSave: (val: string) => viewTableData(name, db.trim(), val) 
+                                 }});
                               }}>Browse Table</button>
                            </div>
                         </div>
@@ -695,7 +724,7 @@ export default function ServerDetail() {
                           <td>
                              <button className="btn btn-ghost" style={{ fontSize: 10, padding: '2px 4px' }} onClick={() => {
                                 const pk = dbData.columns.find(c => c.toLowerCase().includes('id')) || dbData.columns[0];
-                                updateRecord(dbData.dbType, dbData.dbName, dbData.table, pk, row[pk], row);
+                                setModal({ type: 'edit-record', data: { dbType: dbData.dbType, dbName: dbData.dbName, table: dbData.table, pkCol: pk, pkVal: row[pk], data: row } });
                              }}>Edit</button>
                           </td>
                         </tr>
@@ -711,16 +740,20 @@ export default function ServerDetail() {
               <div style={{ padding: '12px 16px', borderBottom: '1px solid rgba(99,120,195,0.1)', display: 'flex', alignItems: 'center', gap: 12 }}>
                 <HardDrive size={16} color="#6366f1" />
                 <span style={{ fontSize: 13, fontWeight: 600, color: '#f1f5f9', flex: 1 }}>Recent Local Backups</span>
-                <button className="btn btn-primary" style={{ padding: '4px 12px', fontSize: 11 }} onClick={async () => {
-                  const name = prompt('Database name to backup:');
-                  if (!name) return;
-                  setBackupRunning(true);
-                  try {
-                    await api(`/api/servers/${srv.id}/backup`, { method: 'POST', body: JSON.stringify({ type: 'mysql', dbName: name }) });
-                    showToast('Backup completed', 'success');
-                    loadTabData();
-                  } catch (e: any) { showToast(e.message, 'error'); }
-                  setBackupRunning(false);
+                <button className="btn btn-primary" style={{ padding: '4px 12px', fontSize: 11 }} onClick={() => {
+                  setModal({ type: 'input', data: { 
+                    title: 'New MySQL Backup', 
+                    placeholder: 'Database name', 
+                    onSave: async (val: string) => {
+                      setBackupRunning(true);
+                      try {
+                        await api(`/api/servers/${srv.id}/backup`, { method: 'POST', body: JSON.stringify({ type: 'mysql', dbName: val }) });
+                        showToast('Backup completed', 'success');
+                        loadTabData();
+                      } catch (e: any) { showToast(e.message, 'error'); }
+                      setBackupRunning(false);
+                    } 
+                  }});
                 }} disabled={backupRunning}>
                   {backupRunning ? 'Running...' : 'New MySQL Backup'}
                 </button>
@@ -1044,7 +1077,7 @@ export default function ServerDetail() {
                 showToast('Issuing certificate... this may take a minute', 'info');
                 try {
                   const data = await api(`/api/servers/${srv.id}/ssl/issue`, { method: 'POST', body: JSON.stringify({ domain: sslDomain, email: sslEmail }) });
-                  alert(data.output);
+                  setModal({ type: 'json', data: { title: 'SSL Process Log', output: data.output } });
                   showToast('SSL Issue process completed', 'success');
                 } catch (e: any) { showToast(e.message, 'error'); }
               }}>Issue Certificate</button>
@@ -1056,7 +1089,7 @@ export default function ServerDetail() {
       {/* SOFTWARE TAB */}
       {tab === 'software' && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-          {['nginx', 'mysql-server', 'postgresql', 'php-fpm', 'docker.io', 'git', 'certbot', 'redis-server', 'nodejs', 'pm2'].map(pkg => {
+          {['nginx', 'mysql-server', 'postgresql', 'php-fpm', 'docker.io', 'git', 'certbot', 'redis-server', 'nodejs', 'pm2', 'fail2ban', 'htop', 'ufw'].map(pkg => {
             const isInstalled = softwareStatus[pkg] === 'installed';
             return (
               <div key={pkg} className="glass" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -1079,7 +1112,10 @@ export default function ServerDetail() {
                    pkg === 'certbot' ? 'Tool for automated SSL/TLS certificates.' :
                    pkg === 'redis-server' ? 'In-memory data structure store.' :
                    pkg === 'nodejs' ? 'JavaScript runtime for server-side apps.' :
-                   pkg === 'pm2' ? 'Production process manager for Node.js.' : ''}
+                   pkg === 'pm2' ? 'Production process manager for Node.js.' : 
+                   pkg === 'fail2ban' ? 'Intrusion prevention software framework.' :
+                   pkg === 'htop' ? 'Interactive system-monitor and process-viewer.' :
+                   pkg === 'ufw' ? 'Uncomplicated Firewall for Linux.' : 'System utility package.'}
                 </p>
                 <div style={{ marginTop: 'auto', paddingTop: 12, borderTop: '1px solid rgba(99,120,195,0.05)' }}>
                   {!isInstalled ? (
@@ -1272,6 +1308,78 @@ export default function ServerDetail() {
                  When enabled, Nginx will block suspicious requests before they reach your application. Note: This applies to all sites hosted on this server.
                </p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Overlay */}
+      {modal && (
+        <div className="modal-overlay" onClick={() => setModal(null)}>
+          <div className="glass animate-fadeIn" style={{ padding: 32, maxWidth: 600, width: '90%', maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <h3 style={{ fontSize: 18, fontWeight: 700, color: '#f1f5f9' }}>
+                {modal.type === 'tables' && `Tables in ${modal.data.dbName}`}
+                {modal.type === 'edit-record' && `Edit Record: ${modal.data.table}`}
+                {modal.type === 'json' && modal.data.title}
+                {modal.type === 'input' && modal.data.title}
+              </h3>
+              <button className="btn btn-ghost" onClick={() => setModal(null)}><X size={18} /></button>
+            </div>
+
+            {(modal.type === 'tables' || modal.type === 'json') && (
+              <div style={{ background: 'rgba(0,0,0,0.2)', padding: 16, borderRadius: 8, fontFamily: 'monospace', fontSize: 12, color: '#e2e8f0', whiteSpace: 'pre-wrap', maxHeight: 400, overflow: 'auto' }}>
+                {modal.data.output}
+              </div>
+            )}
+
+            {modal.type === 'input' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <input 
+                  id="modal-input-field"
+                  placeholder={modal.data.placeholder}
+                  className="input"
+                  style={{ width: '100%' }}
+                  onKeyDown={e => { if (e.key === 'Enter') (document.getElementById('modal-save-btn') as any).click(); }}
+                />
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancel</button>
+                  <button id="modal-save-btn" className="btn btn-primary" onClick={async () => {
+                    const val = (document.getElementById('modal-input-field') as HTMLInputElement).value;
+                    if (!val) return;
+                    await modal.data.onSave(val);
+                    setModal(null);
+                  }}>Confirm</button>
+                </div>
+              </div>
+            )}
+
+            {modal.type === 'edit-record' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div style={{ fontSize: 11, color: '#64748b' }}>Edit JSON below and click save.</div>
+                <textarea 
+                  defaultValue={JSON.stringify(modal.data.data, null, 2)}
+                  id="record-json-editor"
+                  style={{ width: '100%', height: 300, background: '#0a0e1a', color: '#e2e8f0', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, padding: 12, fontSize: 12, fontFamily: 'monospace' }}
+                />
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button className="btn btn-ghost" onClick={() => setModal(null)}>Cancel</button>
+                  <button className="btn btn-primary" onClick={async () => {
+                    const editor = document.getElementById('record-json-editor') as HTMLTextAreaElement;
+                    try {
+                      const newData = JSON.parse(editor.value);
+                      const { dbType, dbName, table, pkCol, pkVal } = modal.data;
+                      await api(`/api/servers/${srv!.id}/db/data/update`, {
+                        method: 'POST',
+                        body: JSON.stringify({ dbType, dbName, table, pkCol, pkVal, data: newData })
+                      });
+                      showToast('Record updated', 'success');
+                      setModal(null);
+                      viewTableData(dbType, dbName, table);
+                    } catch (e) { showToast('Invalid JSON format', 'error'); }
+                  }}>Save Changes</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
